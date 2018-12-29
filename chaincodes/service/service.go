@@ -1,56 +1,61 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
-	"strconv"
-
 	"github.com/inklabsfoundation/inkchain/core/chaincode/shim"
 	pb "github.com/inklabsfoundation/inkchain/protos/peer"
-	"encoding/json"
-	"time"
 	"math/big"
-	"bytes"
+	"strconv"
+	"time"
 )
 
 // Incentive-related const
 const (
-	IncentiveBalanceType 	= "INK"
-	IncentiveMashupInvoke	= "10"
+	IncentiveBalanceType    = "INK"
+	IncentiveMashupInvoke   = "10"
+	UserRegisterCandy       = 100
+	RegisterServiceWithdraw = 100
 )
 
 // Definitions of a service's status
 const (
-	S_Created = "created"
+	S_Created   = "created"
 	S_Available = "available"
-	S_Invalid = "invalid"
+	S_Invalid   = "invalid"
 )
 
 // Prefixes for user and service separately
 const (
-	UserPrefix	= "USER_"
-	ServicePrefix	= "SER_"
+	UserPrefix    = "USER_"
+	ServicePrefix = "SER_"
+)
+
+const (
+	UserServicesKey = "userServicesKey" //composite key for copyright and composite
+	HandselCountKey = "handselCount"
 )
 
 // Invoke functions definition
 const (
 	// User-related basic invoke
-	RegisterUser 	= "registerUser"
-	RemoveUser 		= "removeUser"
-	QueryUser		= "queryUser"
+	RegisterUser = "registerUser"
+	RemoveUser   = "removeUser"
+	QueryUser    = "queryUser"
 
 	// Service-related invoke
-	RegisterService 	= "registerService"
-	InvalidateService 	= "invalidateService"	// mark whether the service is validated
-	PublishService		= "publishService"		// publish a created service
-	CreateMashup 		= "createMashup"		// utilize services to create a new mashup
-	QueryService		= "queryService"
-	EditService			= "editService"
-	QueryServiceByUser	= "queryServiceByUser"
-	QueryServiceByRange	= "queryServiceByRange"
+	RegisterService     = "registerService"
+	InvalidateService   = "invalidateService" // mark whether the service is validated
+	PublishService      = "publishService"    // publish a created service
+	CreateMashup        = "createMashup"      // utilize services to create a new mashup
+	QueryService        = "queryService"
+	EditService         = "editService"
+	QueryServiceByUser  = "queryServiceByUser"
+	QueryServiceByRange = "queryServiceByRange"
 
 	// User-related reward invoke
 	RewardService = "rewardService"
-
 )
 
 // Chaincode for DSES (Decentralized Service Eco-System)
@@ -59,42 +64,42 @@ type serviceChaincode struct {
 
 // Structure definition for user
 type user struct {
-	Name 			string	`json:"name"`
-	Introduction	string	`json:"introduction"`
-	Address 		string 	`json:"address"`
+	Name         string `json:"name"`
+	Introduction string `json:"introduction"`
+	Address      string `json:"address"`
 	// There is a one-to-one correspondence between "Name" and "Address"
 	// The Address records the user's profit from creating valuable services or mashups.
 
-	Contribution	int		`json:"contribution"`
+	Contribution int `json:"contribution"`
 	// "Contribution" evaluates the user's contribution to the service ecosystem.
 	// TODO: add handler about "Contribution"
 	// Benefit of "Contribution":
 	// 1. construct a evaluation for every user's contribution on the service ecosystem
 	// 2. inspire users to participate in creating new services and mashups
-
 }
 
 // Structure definition for service
 // type "service" defines conventional services as well as mashups.
 type service struct {
-	Name 			string	`json:"name"`
-	Type			string  `json:"type"`
-	Developer		string	`json:"developer"`		// record the user that developed this service
-	Description		string 	`json:"description"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Developer   string `json:"developer"` // record the user that developed this service
+	Description string `json:"description"`
+	Resource    string `json:"resource"` //service address
 
-	CreatedTime		string	`json:"createdTime"`
-	UpdatedTime		string	`json:"updatedTime"`
+	CreatedTime string `json:"createdTime"`
+	UpdatedTime string `json:"updatedTime"`
 
 	// Status records the status of a service:
 	// created/available/invalid
-	Status			string 	`json:"status"`
+	Status string `json:"status"`
 
 	// Whether the service is a mashup or not.
-	IsMashup		bool 	`json:"isMashup"`
+	IsMashup bool `json:"isMashup"`
 
 	// if the service is a mashup, "Composited" records the services that it invokes;
 	// if the service is not a mashup, "Composited" records the co-occurrence documents of the service
-	Composition		map[string]int	`json:"composition"`
+	Composition map[string]int `json:"composition"`
 
 	// Benefit of "Composited":
 	// 1. Automatically create service co-occurrence documents and store it into the ledger
@@ -117,6 +122,19 @@ func main() {
 // ==================================================================================
 func (t *serviceChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	fmt.Println("assetChaincode Init.")
+	_, args := stub.GetFunctionAndParameters()
+	if len(args) != 1 {
+		return shim.Error(fmt.Errorf("arg number must more than 1").Error())
+	}
+	handselCount := big.NewInt(0)
+	_, good := handselCount.SetString(args[0], 10)
+	if !good {
+		return shim.Error("Expecting integer value for count")
+	}
+	err := stub.PutState(HandselCountKey, handselCount.Bytes())
+	if err != nil {
+		return shim.Error(err.Error())
+	}
 	return shim.Success([]byte("Init success."))
 }
 
@@ -153,13 +171,14 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 	// ********************************************************
 	// PART 2: service-related invokes
 	case RegisterService:
-		if len(args) != 4 {
-			return shim.Error("Incorrect number of arguments. Expecting 4.")
+		if len(args) != 5 {
+			return shim.Error("Incorrect number of arguments. Expecting 5.")
 		}
 		// args[0]: service name
 		// args[1]: service type
 		// args[2]: service description
 		// args[3]: developer's name
+		// args[4]: service path
 		return t.registerService(stub, args)
 
 	case InvalidateService:
@@ -203,7 +222,7 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return t.createMashup(stub, args)
 
 	case QueryServiceByRange:
-		if len(args) !=2 {
+		if len(args) != 2 {
 			return shim.Error("Incorrect number of arguments. Expecting 2.")
 		}
 		// args[0]: begin index
@@ -220,6 +239,13 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		// args[1]: reward_type
 		// args[2]: reward_amount
 		return t.rewardService(stub, args)
+
+	case QueryServiceByUser:
+		if len(args) != 1 {
+			return shim.Error("Incorrect number of arguments. Expecting 1.")
+		}
+		// args[0]: user_name
+		return t.queryServiceByUser(stub, args)
 	}
 
 	return shim.Error("Invalid invoke function name.")
@@ -264,6 +290,23 @@ func (t *serviceChaincode) registerUser(stub shim.ChaincodeStubInterface, args [
 	err = stub.PutState(user_key, userJSONasBytes)
 	if err != nil {
 		return shim.Error(err.Error())
+	}
+
+	handselCountBytes, err := stub.GetState(HandselCountKey)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	handselCount := big.NewInt(0).SetBytes(handselCountBytes)
+	if handselCount.Cmp(big.NewInt(0)) > 0 {
+		handselCount = handselCount.Sub(handselCount, big.NewInt(1))
+		err = stub.Transfer(new_add, IncentiveBalanceType, big.NewInt(UserRegisterCandy))
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		err = stub.PutState(HandselCountKey, handselCount.Bytes())
+		if err != nil {
+			return shim.Error(err.Error())
+		}
 	}
 
 	return shim.Success([]byte("User register success."))
@@ -326,15 +369,17 @@ func (t *serviceChaincode) queryUser(stub shim.ChaincodeStubInterface, args []st
 func (t *serviceChaincode) registerService(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	var service_name string
 	var service_type string
-	var service_des  string
-	var service_dev  string
+	var service_des string
+	var service_dev string
 	var user_name string
+	var service_address string
 	var err error
 
 	service_name = args[0]
 	service_type = args[1]
 	service_des = args[2]
 	user_name = args[3]
+	service_address = args[4]
 
 	// get service developer, check if it corresponds with the input user
 	service_dev, err = stub.GetSender()
@@ -370,7 +415,7 @@ func (t *serviceChaincode) registerService(stub shim.ChaincodeStubInterface, arg
 
 	// register service
 	newS := &service{service_name, service_type, user_name,
-		service_des, tString, "", S_Created,
+		service_des, service_address, tString, "", S_Created,
 		false, make(map[string]int)}
 	serviceJSONasBytes, err := json.Marshal(newS)
 	if err != nil {
@@ -380,6 +425,7 @@ func (t *serviceChaincode) registerService(stub shim.ChaincodeStubInterface, arg
 	if err != nil {
 		return shim.Error(err.Error())
 	}
+	err = t.saveServiceByUserName(stub, user_name, service_name, serviceJSONasBytes)
 
 	return shim.Success([]byte("Service register success."))
 }
@@ -433,8 +479,8 @@ func (t *serviceChaincode) invalidateService(stub shim.ChaincodeStubInterface, a
 	// STEP 2: invalidate the service and store it.
 	// new service, make it invalidated
 	new_service := &service{serviceJSON.Name, serviceJSON.Type, serviceJSON.Developer,
-							serviceJSON.Description, serviceJSON.CreatedTime, serviceJSON.UpdatedTime,
-							S_Invalid, serviceJSON.IsMashup, serviceJSON.Composition}
+		serviceJSON.Description, serviceJSON.CreatedTime, serviceJSON.UpdatedTime,
+		S_Invalid, serviceJSON.IsMashup, serviceJSON.Composition}
 	// store the new service
 	assetJSONasBytes, err := json.Marshal(new_service)
 	if err != nil {
@@ -594,8 +640,8 @@ func (t *serviceChaincode) editService(stub shim.ChaincodeStubInterface, args []
 	tString := tNow.UTC().Format(time.UnixDate)
 
 	new_service := &service{serviceJSON.Name, serviceJSON.Type, serviceJSON.Developer,
-							serviceJSON.Description, serviceJSON.CreatedTime, tString,
-							 serviceJSON.Status, serviceJSON.IsMashup, serviceJSON.Composition}
+		serviceJSON.Description, serviceJSON.CreatedTime, tString,
+		serviceJSON.Status, serviceJSON.IsMashup, serviceJSON.Composition}
 
 	// STEP 3: update field value
 	// developer can update service's type/description information
@@ -632,8 +678,8 @@ LABEL_STORE:
 func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	var mashup_name string
 	var mashup_type string
-	var mashup_des  string
-	var mashup_dev  string
+	var mashup_des string
+	var mashup_dev string
 	var err error
 
 	mashup_name = args[0]
@@ -663,7 +709,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	// create composition
 	new_map := make(map[string]int)
 	new_developer_map := make(map[string]int)
-	for i:= 3; i<len(args);i++ {
+	for i := 3; i < len(args); i++ {
 		// check the service exist
 		service_key := ServicePrefix + args[i]
 		serviceAsBytes, err := stub.GetState(service_key)
@@ -695,7 +741,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	incentive_amount := big.NewInt(0)
 	incentive_amount.SetString(IncentiveMashupInvoke, 10)
 
-	for k,_ := range(new_developer_map) {
+	for k, _ := range (new_developer_map) {
 		// get the k's address
 		user_key := UserPrefix + k
 		userAsBytes, err := stub.GetState(user_key)
@@ -815,27 +861,75 @@ func (t *serviceChaincode) queryServiceByRange(stub shim.ChaincodeStubInterface,
 		if err != nil {
 			return shim.Error(err.Error())
 		}
-			// Add a comma before array members, suppress it for the first array member
-			if bArrayMemberAlreadyWritten == true {
-				buffer.WriteString(",")
-			}
-			// index of the result
-			buffer.WriteString("{\"Number\":")
-			buffer.WriteString("\"")
-			bArrayIndexStr := strconv.Itoa(bArrayIndex)
-			buffer.WriteString(string(bArrayIndexStr))
-			bArrayIndex += 1
-			buffer.WriteString("\"")
-			// information about current asset
-			buffer.WriteString(", \"Record\":")
-			buffer.WriteString(string(queryResponse.Value))
-			buffer.WriteString("}")
-			bArrayMemberAlreadyWritten = true
-
+		// Add a comma before array members, suppress it for the first array member
+		if bArrayMemberAlreadyWritten == true {
+			buffer.WriteString(",")
+		}
+		// index of the result
+		buffer.WriteString("{\"Number\":")
+		buffer.WriteString("\"")
+		bArrayIndexStr := strconv.Itoa(bArrayIndex)
+		buffer.WriteString(string(bArrayIndexStr))
+		bArrayIndex += 1
+		buffer.WriteString("\"")
+		// information about current asset
+		buffer.WriteString(", \"Record\":")
+		buffer.WriteString(string(queryResponse.Value))
+		buffer.WriteString("}")
+		bArrayMemberAlreadyWritten = true
 
 	}
 	buffer.WriteString("]")
 
 	return shim.Success(buffer.Bytes())
 
+}
+
+// ========================================================================
+// saveServiceByUserName: save service with key which include user name and service name
+//
+// userName are required
+// serviceName are required
+// ========================================================================
+func (t *serviceChaincode) saveServiceByUserName(stub shim.ChaincodeStubInterface, userName string, serviceName string, state []byte) error {
+	compositeKey, err := stub.CreateCompositeKey(UserServicesKey, []string{userName, serviceName})
+	if err != nil {
+		return fmt.Errorf(fmt.Sprintf("create composite key error: %s", err.Error()))
+	}
+	err = stub.PutState(compositeKey, state)
+	if err != nil {
+		return fmt.Errorf(fmt.Sprintf("save error: %s", err.Error()))
+	}
+	return nil
+}
+
+// ========================================================================
+// queryServiceByUser: query services' names by user name (name)
+//
+// name are case-sensitive
+// use "" for both name if you want to query all the assets
+// ========================================================================
+func (t *serviceChaincode) queryServiceByUser(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	resultsIterator, err := stub.GetStateByPartialCompositeKey(UserServicesKey, args)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	services := make([]*service, 0)
+	for i := 0; resultsIterator.HasNext(); i++ {
+		responseRange, err := resultsIterator.Next()
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		service := &service{}
+		err = json.Unmarshal(responseRange.Value, service)
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		services = append(services, service)
+	}
+	servicesBytes, err := json.Marshal(services)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success(servicesBytes)
 }
