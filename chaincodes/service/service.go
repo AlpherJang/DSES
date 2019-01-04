@@ -13,10 +13,8 @@ import (
 
 // Incentive-related const
 const (
-	IncentiveBalanceType    = "INK"
-	IncentiveMashupInvoke   = "10"
-	UserRegisterCandy       = 100
-	RegisterServiceWithdraw = 100
+	IncentiveBalanceType  = "INK"
+	IncentiveMashupInvoke = "10"
 )
 
 // Definitions of a service's status
@@ -34,7 +32,6 @@ const (
 
 const (
 	UserServicesKey = "userServicesKey" //composite key for copyright and composite
-	HandselCountKey = "handselCount"
 )
 
 // Invoke functions definition
@@ -53,6 +50,8 @@ const (
 	EditService         = "editService"
 	QueryServiceByUser  = "queryServiceByUser"
 	QueryServiceByRange = "queryServiceByRange"
+	CallService         = "callService"
+	ReduceCallTime      = "reduceCallTime"
 
 	// User-related reward invoke
 	RewardService = "rewardService"
@@ -81,11 +80,12 @@ type user struct {
 // Structure definition for service
 // type "service" defines conventional services as well as mashups.
 type service struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Developer   string `json:"developer"` // record the user that developed this service
-	Description string `json:"description"`
-	Resource    string `json:"resource"` //service address
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Developer   string   `json:"developer"` // record the user that developed this service
+	Description string   `json:"description"`
+	Resource    string   `json:"resource"` //service address
+	Price       *big.Int `json:"price"`
 
 	CreatedTime string `json:"createdTime"`
 	UpdatedTime string `json:"updatedTime"`
@@ -122,19 +122,6 @@ func main() {
 // ==================================================================================
 func (t *serviceChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	fmt.Println("assetChaincode Init.")
-	_, args := stub.GetFunctionAndParameters()
-	if len(args) != 1 {
-		return shim.Error(fmt.Errorf("arg number must more than 1").Error())
-	}
-	handselCount := big.NewInt(0)
-	_, good := handselCount.SetString(args[0], 10)
-	if !good {
-		return shim.Error("Expecting integer value for count")
-	}
-	err := stub.PutState(HandselCountKey, handselCount.Bytes())
-	if err != nil {
-		return shim.Error(err.Error())
-	}
 	return shim.Success([]byte("Init success."))
 }
 
@@ -171,7 +158,7 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 	// ********************************************************
 	// PART 2: service-related invokes
 	case RegisterService:
-		if len(args) != 5 {
+		if len(args) != 6 {
 			return shim.Error("Incorrect number of arguments. Expecting 5.")
 		}
 		// args[0]: service name
@@ -179,6 +166,7 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		// args[2]: service description
 		// args[3]: developer's name
 		// args[4]: service path
+		// args[5]: service price
 		return t.registerService(stub, args)
 
 	case InvalidateService:
@@ -212,13 +200,14 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return t.editService(stub, args)
 
 	case CreateMashup:
-		if len(args) < 4 {
-			return shim.Error("Incorrect number of arguments. Expecting 4 at least.")
+		if len(args) < 5 {
+			return shim.Error("Incorrect number of arguments. Expecting 5 at least.")
 		}
 		// args[0]: mashup name
 		// args[1]: mashup type
 		// args[2]: mashup description
-		// args[3...]: invoked service list
+		// args[3]: mashup price
+		// args[4...]: invoked service list
 		return t.createMashup(stub, args)
 
 	case QueryServiceByRange:
@@ -246,6 +235,15 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		}
 		// args[0]: user_name
 		return t.queryServiceByUser(stub, args)
+	case CallService:
+		if len(args) != 2 {
+			return shim.Error("Incorrect number of arguments. Expecting 2.")
+		}
+	case ReduceCallTime:
+		if len(args) != 2 {
+			return shim.Error("Incorrect number of arguments. Expecting 2.")
+		}
+
 	}
 
 	return shim.Error("Invalid invoke function name.")
@@ -290,23 +288,6 @@ func (t *serviceChaincode) registerUser(stub shim.ChaincodeStubInterface, args [
 	err = stub.PutState(user_key, userJSONasBytes)
 	if err != nil {
 		return shim.Error(err.Error())
-	}
-
-	handselCountBytes, err := stub.GetState(HandselCountKey)
-	if err != nil {
-		return shim.Error(err.Error())
-	}
-	handselCount := big.NewInt(0).SetBytes(handselCountBytes)
-	if handselCount.Cmp(big.NewInt(0)) > 0 {
-		handselCount = handselCount.Sub(handselCount, big.NewInt(1))
-		err = stub.Transfer(new_add, IncentiveBalanceType, big.NewInt(UserRegisterCandy))
-		if err != nil {
-			return shim.Error(err.Error())
-		}
-		err = stub.PutState(HandselCountKey, handselCount.Bytes())
-		if err != nil {
-			return shim.Error(err.Error())
-		}
 	}
 
 	return shim.Success([]byte("User register success."))
@@ -373,6 +354,7 @@ func (t *serviceChaincode) registerService(stub shim.ChaincodeStubInterface, arg
 	var service_dev string
 	var user_name string
 	var service_address string
+	var price *big.Int
 	var err error
 
 	service_name = args[0]
@@ -380,6 +362,11 @@ func (t *serviceChaincode) registerService(stub shim.ChaincodeStubInterface, arg
 	service_des = args[2]
 	user_name = args[3]
 	service_address = args[4]
+	priceStr := args[5]
+	price, ok := big.NewInt(0).SetString(priceStr, 10)
+	if !ok {
+		return shim.Error("6th args must be intefer")
+	}
 
 	// get service developer, check if it corresponds with the input user
 	service_dev, err = stub.GetSender()
@@ -415,7 +402,7 @@ func (t *serviceChaincode) registerService(stub shim.ChaincodeStubInterface, arg
 
 	// register service
 	newS := &service{service_name, service_type, user_name,
-		service_des, service_address, tString, "", S_Created,
+		service_des, service_address, price, tString, "", S_Created,
 		false, make(map[string]int)}
 	serviceJSONasBytes, err := json.Marshal(newS)
 	if err != nil {
@@ -479,7 +466,7 @@ func (t *serviceChaincode) invalidateService(stub shim.ChaincodeStubInterface, a
 	// STEP 2: invalidate the service and store it.
 	// new service, make it invalidated
 	new_service := &service{serviceJSON.Name, serviceJSON.Type, serviceJSON.Developer,
-		serviceJSON.Description, serviceJSON.CreatedTime, serviceJSON.UpdatedTime,
+		serviceJSON.Description, serviceJSON.Resource, serviceJSON.Price, serviceJSON.CreatedTime, serviceJSON.UpdatedTime,
 		S_Invalid, serviceJSON.IsMashup, serviceJSON.Composition}
 	// store the new service
 	assetJSONasBytes, err := json.Marshal(new_service)
@@ -547,7 +534,7 @@ func (t *serviceChaincode) publishService(stub shim.ChaincodeStubInterface, args
 	// STEP 2: publish the service and store it.
 	// new service, make it invalidated
 	new_service := &service{serviceJSON.Name, serviceJSON.Type, serviceJSON.Developer,
-		serviceJSON.Description, serviceJSON.CreatedTime, serviceJSON.UpdatedTime,
+		serviceJSON.Description, serviceJSON.Resource, serviceJSON.Price, serviceJSON.CreatedTime, serviceJSON.UpdatedTime,
 		S_Available, serviceJSON.IsMashup, serviceJSON.Composition}
 	// store the new service
 	serviceJSONasBytes, err := json.Marshal(new_service)
@@ -640,7 +627,7 @@ func (t *serviceChaincode) editService(stub shim.ChaincodeStubInterface, args []
 	tString := tNow.UTC().Format(time.UnixDate)
 
 	new_service := &service{serviceJSON.Name, serviceJSON.Type, serviceJSON.Developer,
-		serviceJSON.Description, serviceJSON.CreatedTime, tString,
+		serviceJSON.Description, serviceJSON.Resource, serviceJSON.Price, serviceJSON.CreatedTime, tString,
 		serviceJSON.Status, serviceJSON.IsMashup, serviceJSON.Composition}
 
 	// STEP 3: update field value
@@ -680,11 +667,17 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	var mashup_type string
 	var mashup_des string
 	var mashup_dev string
+	var price *big.Int
 	var err error
 
 	mashup_name = args[0]
 	mashup_type = args[1]
 	mashup_des = args[2]
+	price_str := args[3]
+	price, ok := big.NewInt(0).SetString(price_str, 10)
+	if !ok {
+		return shim.Error("4th args must be integer")
+	}
 
 	// STEP 0: get mashup developer
 	mashup_dev, err = stub.GetSender()
@@ -709,7 +702,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	// create composition
 	new_map := make(map[string]int)
 	new_developer_map := make(map[string]int)
-	for i := 3; i < len(args); i++ {
+	for i := 4; i < len(args); i++ {
 		// check the service exist
 		service_key := ServicePrefix + args[i]
 		serviceAsBytes, err := stub.GetState(service_key)
@@ -731,7 +724,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 
 	// new mashup
 	newS := &service{mashup_name, mashup_type, mashup_dev,
-		mashup_des, tString, "", S_Created,
+		mashup_des, "", big.NewInt(0), tString, "", S_Created,
 		true, new_map}
 
 	// STEP 3: pay to the invoked services' developers
