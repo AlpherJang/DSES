@@ -15,7 +15,6 @@ import (
 
 // Incentive-related const
 const (
-	IncentiveBalanceType  = "INK"
 	IncentiveMashupInvoke = "10"
 	FeeBalanceType        = "TOKENS"
 )
@@ -58,6 +57,7 @@ const (
 	QueryServiceByRange = "queryServiceByRange"
 	CallService         = "callService"
 	ReduceCallTime      = "reduceCallTime"
+	GetCallTime         = "getCallTime"
 
 	// User-related reward invoke
 	RewardService = "rewardService"
@@ -276,11 +276,20 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		// args[0]: service name
 		// args[1]: call times
 		return t.callService(stub, args)
-
-	case ReduceCallTime:
+	case GetCallTime:
 		if len(args) != 2 {
 			return shim.Error("Incorrect number of arguments. Expecting 2.")
 		}
+		//args[0]: service name
+		//args[1]: user name
+		return t.getCallTime(stub, args)
+	case ReduceCallTime:
+		if len(args) != 3 {
+			return shim.Error("Incorrect number of arguments. Expecting 3.")
+		}
+		//args[0]: service name
+		//args[1]: caller name
+		//args[2]: reduce times
 		return t.reduceCallTime(stub, args)
 	}
 
@@ -315,6 +324,12 @@ func (t *serviceChaincode) registerUser(stub shim.ChaincodeStubInterface, args [
 		return shim.Error("Fail to get user: " + err.Error())
 	} else if userAsBytes != nil {
 		return shim.Error("This user already exists: " + new_name)
+	}
+	userAddressAsBytes, err := stub.GetState(UserPrefix + new_add)
+	if err != nil {
+		return shim.Error("Fail to get user by address: " + err.Error())
+	} else if userAddressAsBytes != nil {
+		return shim.Error("This address already registered")
 	}
 
 	// register user
@@ -792,7 +807,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 		}
 		// make incentive transfer
 		// from the mashup developer to the invoked service's developer
-		err = stub.Transfer(userJSON.Address, IncentiveBalanceType, incentive_amount)
+		err = stub.Transfer(userJSON.Address, FeeBalanceType, incentive_amount)
 		if err != nil {
 			return shim.Error("Error when making transfer.")
 		}
@@ -976,10 +991,11 @@ func (t *serviceChaincode) queryServiceByUser(stub shim.ChaincodeStubInterface, 
 // ========================================================================
 func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	var service_name, sender string
-	var call_times *big.Int
+	var call_times, total *big.Int
 	var time_stamp *timestamp.Timestamp
 	var service_data service
 	var user_data user
+	var record serviceCallTime
 	var err error
 
 	time_stamp, err = stub.GetTxTimestamp()
@@ -1028,8 +1044,23 @@ func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []
 		return shim.Error("Service not invalid")
 	}
 
-	record := serviceCallTime{service_name, user_data.Name, sender, service_data.Price, call_times, time_stamp.String(), time_stamp.String()}
+	total = total.Mul(service_data.Price, call_times)
 	record_key := ServiceCallTimesPrefix + service_name + user_data.Name
+	callTimesJson, err := stub.GetState(record_key)
+	if err != nil {
+		return shim.Error("Get old call times log failed: " + err.Error())
+	} else if callTimesJson != nil {
+		err = json.Unmarshal(callTimesJson, &record)
+		if err != nil {
+			return shim.Error("Unmarshal old call times log failed: " + err.Error())
+		}
+		record.CallTimes = big.NewInt(0).Add(call_times, record.CallTimes)
+		record.UpdateTime = time_stamp.String()
+		record.Total = big.NewInt(0).Add(total, record.Total)
+	} else {
+		record = serviceCallTime{service_name, user_data.Name, sender, call_times, total, time_stamp.String(), time_stamp.String()}
+	}
+
 	recordJson, err := json.Marshal(record)
 	if err != nil {
 		return shim.Error("Marshal call time info failed: " + err.Error())
@@ -1043,7 +1074,7 @@ func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []
 		return shim.Error("Failed to save call time info: " + err.Error())
 	}
 
-	buy_record := buyRecord{record_key, service_name, user_data.Name, call_times, service_data.Price, time_stamp.String()}
+	buy_record := buyRecord{record_key, service_name, user_data.Name, call_times, total, time_stamp.String()}
 	buyRecordJson, err := json.Marshal(buy_record)
 	if err != nil {
 		return shim.Error("Marshal buy record failed:" + err.Error())
@@ -1057,12 +1088,47 @@ func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []
 	return shim.Success(nil)
 }
 
+// ========================================================================
+// getCallTime: query some one have buy service's call times
+//
+// serviceName and userName are required
+// ========================================================================
+func (t *serviceChaincode) getCallTime(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	var service_name, user_name string
+	var err error
+
+	service_name = strings.TrimSpace(strings.ToLower(args[0]))
+	if len(service_name) <= 0 {
+		return shim.Error("1st arg must be non-empty string")
+	}
+
+	user_name = strings.TrimSpace(strings.ToLower(args[1]))
+	if len(user_name) <= 0 {
+		return shim.Error("2st arg must be non-empty string")
+	}
+
+	record_key := ServiceCallTimesPrefix + service_name + user_name
+	callTimeJson, err := stub.GetState(record_key)
+	if err != nil {
+		return shim.Error(err.Error())
+	} else if callTimeJson == nil {
+		return shim.Error("User " + user_name + " have never buy service call times")
+	}
+	return shim.Success(callTimeJson)
+}
+
+// ========================================================================
+// reduceCallTime: reduce user's service call times
+//
+// serviceName, userName and reduceTime are required
+// ========================================================================
 func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	var service_name, sender string
+	var service_name, sender, caller string
 	var reduce_time *big.Int
 	var time_stamp *timestamp.Timestamp
 	var call_time serviceCallTime
 	var reduce_record reduceRecord
+	var service_data service
 	var user_data user
 	var err error
 
@@ -1077,13 +1143,17 @@ func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args
 	}
 
 	service_name = strings.TrimSpace(strings.ToLower(args[0]))
-	if len(service_name) <= 0 {
+	if len(service_name) == 0 {
 		return shim.Error("1st arg must be non-empty string")
 	}
-	reduce_time_str := strings.TrimSpace(strings.ToLower(args[1]))
+	caller = strings.TrimSpace(strings.ToLower(args[1]))
+	if len(caller) == 0 {
+		return shim.Error("2st arg must be non-empty string")
+	}
+	reduce_time_str := strings.TrimSpace(strings.ToLower(args[2]))
 	reduce_time, ok := big.NewInt(0).SetString(reduce_time_str, 10)
 	if !ok {
-		return shim.Error("2th arg must be integer")
+		return shim.Error("3th arg must be integer")
 	}
 
 	userAsJson, err := stub.GetState(UserPrefix + sender)
@@ -1097,7 +1167,21 @@ func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args
 		return shim.Error("Unmarshal user info failed: " + err.Error())
 	}
 
-	call_time_key := ServiceCallTimesPrefix + service_name + sender
+	service_key := ServicePrefix + service_name
+	serviceAsBytes, err := stub.GetState(service_key)
+	if err != nil {
+		return shim.Error("Fail to get service: " + err.Error())
+	} else if serviceAsBytes == nil {
+		return shim.Error("This service does not exist: " + service_name)
+	}
+	err = json.Unmarshal(serviceAsBytes, &service_data)
+	if err != nil {
+		return shim.Error("Fail to unmarshal service data")
+	} else if service_data.Developer != user_data.Name {
+		return shim.Error("Service not developed by you")
+	}
+
+	call_time_key := ServiceCallTimesPrefix + service_name + caller
 	callTimeJson, err := stub.GetState(call_time_key)
 	if err != nil {
 		return shim.Error("Get call time info failed : " + err.Error())
@@ -1123,7 +1207,7 @@ func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args
 		return shim.Error("Update call time failed : " + err.Error())
 	}
 
-	reduce_key := fmt.Sprintf("%s%s%s%d", ReduceRecordPrefix, service_name, sender, time_stamp.Seconds)
+	reduce_key := fmt.Sprintf("%s%s%s%d", ReduceRecordPrefix, service_name, caller, time_stamp.Seconds)
 	reduce_record = reduceRecord{service_name, call_time_key, user_data.Name, reduce_time, time_stamp.String()}
 	reduceJson, err := json.Marshal(reduce_record)
 	if err != nil {
