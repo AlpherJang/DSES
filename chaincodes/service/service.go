@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/golang/protobuf/ptypes/timestamp"
 	"github.com/inklabsfoundation/inkchain/core/chaincode/shim"
 	pb "github.com/inklabsfoundation/inkchain/protos/peer"
 	"math/big"
@@ -354,10 +353,16 @@ func (t *serviceChaincode) registerUser(stub shim.ChaincodeStubInterface, args [
 // removeUser: Remove an existed user
 // ===================================
 func (t *serviceChaincode) removeUser(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	var user_name string
+	var user_name, new_add string
 	var err error
 
 	user_name = args[0]
+
+	// Get the user's address automatically through INKchian's GetSender() interface
+	new_add, err = stub.GetSender()
+	if err != nil {
+		return shim.Error("Fail to get the sender's address.")
+	}
 
 	// check if user exists
 	user_key := UserPrefix + user_name
@@ -369,6 +374,10 @@ func (t *serviceChaincode) removeUser(stub shim.ChaincodeStubInterface, args []s
 	}
 
 	err = stub.DelState(user_key)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	err = stub.DelState(UserPrefix + new_add)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
@@ -991,14 +1000,14 @@ func (t *serviceChaincode) queryServiceByUser(stub shim.ChaincodeStubInterface, 
 // ========================================================================
 func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	var service_name, sender string
-	var call_times, total *big.Int
-	var time_stamp *timestamp.Timestamp
+	call_times := big.NewInt(0)
+	total := big.NewInt(0)
 	var service_data service
 	var user_data user
 	var record serviceCallTime
 	var err error
 
-	time_stamp, err = stub.GetTxTimestamp()
+	time_stamp, err := stub.GetTxTimestamp()
 	if err != nil {
 		return shim.Error("Can't get timestamp : " + err.Error())
 	}
@@ -1008,11 +1017,11 @@ func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []
 		return shim.Error("Failed to get sender : " + err.Error())
 	}
 
-	service_name = strings.TrimSpace(strings.ToLower(args[0]))
+	service_name = strings.TrimSpace(args[0])
 	if len(service_name) <= 0 {
 		return shim.Error("1st arg must be non-empty string")
 	}
-	call_time_str := strings.TrimSpace(strings.ToLower(args[1]))
+	call_time_str := strings.TrimSpace(args[1])
 	call_times, ok := big.NewInt(0).SetString(call_time_str, 10)
 	if !ok {
 		return shim.Error("2th arg must be integer")
@@ -1040,7 +1049,7 @@ func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []
 	if err != nil {
 		return shim.Error("Unmarshal service info failed: " + err.Error())
 	}
-	if service_data.Status != S_Invalid {
+	if service_data.Status != S_Available {
 		return shim.Error("Service not invalid")
 	}
 
@@ -1065,7 +1074,18 @@ func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []
 	if err != nil {
 		return shim.Error("Marshal call time info failed: " + err.Error())
 	}
-	err = stub.Transfer(service_data.Developer, FeeBalanceType, service_data.Price)
+	developerKey := UserPrefix + service_data.Developer
+	developerAsBytes, err := stub.GetState(developerKey)
+	if err != nil {
+		return shim.Error("Fail to get the developer's info.")
+	}
+	var developer user
+	err = json.Unmarshal([]byte(developerAsBytes), &developer)
+	if err != nil {
+		return shim.Error("Error unmarshal developer bytes.")
+	}
+
+	err = stub.Transfer(developer.Address, FeeBalanceType, service_data.Price)
 	if err != nil {
 		return shim.Error("Send service fee failed: " + err.Error())
 	}
@@ -1097,12 +1117,12 @@ func (t *serviceChaincode) getCallTime(stub shim.ChaincodeStubInterface, args []
 	var service_name, user_name string
 	var err error
 
-	service_name = strings.TrimSpace(strings.ToLower(args[0]))
+	service_name = strings.TrimSpace(args[0])
 	if len(service_name) <= 0 {
 		return shim.Error("1st arg must be non-empty string")
 	}
 
-	user_name = strings.TrimSpace(strings.ToLower(args[1]))
+	user_name = strings.TrimSpace(args[1])
 	if len(user_name) <= 0 {
 		return shim.Error("2st arg must be non-empty string")
 	}
@@ -1125,14 +1145,13 @@ func (t *serviceChaincode) getCallTime(stub shim.ChaincodeStubInterface, args []
 func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	var service_name, sender, caller string
 	var reduce_time *big.Int
-	var time_stamp *timestamp.Timestamp
 	var call_time serviceCallTime
 	var reduce_record reduceRecord
 	var service_data service
 	var user_data user
 	var err error
 
-	time_stamp, err = stub.GetTxTimestamp()
+	time_stamp, err := stub.GetTxTimestamp()
 	if err != nil {
 		return shim.Error("Can't get timestamp : " + err.Error())
 	}
@@ -1142,15 +1161,15 @@ func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args
 		return shim.Error("Failed to get sender : " + err.Error())
 	}
 
-	service_name = strings.TrimSpace(strings.ToLower(args[0]))
+	service_name = strings.TrimSpace(args[0])
 	if len(service_name) == 0 {
 		return shim.Error("1st arg must be non-empty string")
 	}
-	caller = strings.TrimSpace(strings.ToLower(args[1]))
+	caller = strings.TrimSpace(args[1])
 	if len(caller) == 0 {
 		return shim.Error("2st arg must be non-empty string")
 	}
-	reduce_time_str := strings.TrimSpace(strings.ToLower(args[2]))
+	reduce_time_str := strings.TrimSpace(args[2])
 	reduce_time, ok := big.NewInt(0).SetString(reduce_time_str, 10)
 	if !ok {
 		return shim.Error("3th arg must be integer")
