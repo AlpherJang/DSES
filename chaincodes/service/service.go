@@ -35,7 +35,8 @@ const (
 )
 
 const (
-	UserServicesKey = "userServicesKey" //composite key for copyright and composite
+	UserServicesKey = "userServicesKey" //composite key for user service composite
+	CallTimeKey     = "callTimeKey"     //composite key for call time composite
 )
 
 // Invoke functions definition
@@ -56,6 +57,7 @@ const (
 	QueryServiceByRange = "queryServiceByRange"
 	CallService         = "callService"
 	ReduceCallTime      = "reduceCallTime"
+	GetCallTimes        = "getCallTimes"
 	GetCallTime         = "getCallTime"
 
 	// User-related reward invoke
@@ -268,6 +270,7 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		}
 		// args[0]: user_name
 		return t.queryServiceByUser(stub, args)
+
 	case CallService:
 		if len(args) != 2 {
 			return shim.Error("Incorrect number of arguments. Expecting 2.")
@@ -275,6 +278,7 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		// args[0]: service name
 		// args[1]: call times
 		return t.callService(stub, args)
+
 	case GetCallTime:
 		if len(args) != 2 {
 			return shim.Error("Incorrect number of arguments. Expecting 2.")
@@ -282,6 +286,13 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		//args[0]: service name
 		//args[1]: user name
 		return t.getCallTime(stub, args)
+
+	case GetCallTimes:
+		if len(args) != 1 {
+			return shim.Error("Incorrect number of arguments. Expecting 1.")
+		}
+		return t.getCallTimes(stub, args)
+
 	case ReduceCallTime:
 		if len(args) != 3 {
 			return shim.Error("Incorrect number of arguments. Expecting 3.")
@@ -733,13 +744,15 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	var mashup_type string
 	var mashup_des string
 	var mashup_dev string
+	var user_name string
 	var price *big.Int
 	var err error
 
 	mashup_name = args[0]
 	mashup_type = args[1]
 	mashup_des = args[2]
-	price_str := args[3]
+	user_name = args[3]
+	price_str := args[4]
 	price, ok := big.NewInt(0).SetString(price_str, 10)
 	if !ok {
 		return shim.Error("4th args must be integer")
@@ -749,6 +762,19 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	mashup_dev, err = stub.GetSender()
 	if err != nil {
 		return shim.Error("Fail to get the sender's address.")
+	}
+	user_key := UserPrefix + user_name
+	userAsBytes, err := stub.GetState(user_key)
+	if err != nil {
+		return shim.Error("Fail to get user: " + err.Error())
+	}
+	var userJSON user
+	err = json.Unmarshal([]byte(userAsBytes), &userJSON)
+	if err != nil {
+		return shim.Error("Error unmarshal user bytes.")
+	}
+	if userJSON.Address != mashup_dev {
+		return shim.Error("Not the correct user.")
 	}
 
 	// STEP 1: check if service does not exist
@@ -768,7 +794,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	// create composition
 	new_map := make(map[string]int)
 	new_developer_map := make(map[string]int)
-	for i := 4; i < len(args); i++ {
+	for i := 5; i < len(args); i++ {
 		// check the service exist
 		service_key := ServicePrefix + args[i]
 		serviceAsBytes, err := stub.GetState(service_key)
@@ -789,7 +815,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	}
 
 	// new mashup
-	newS := &service{mashup_name, mashup_type, mashup_dev,
+	newS := &service{mashup_name, mashup_type, user_name,
 		mashup_des, "", price, tString, "", S_Created,
 		true, new_map}
 
@@ -831,6 +857,7 @@ func (t *serviceChaincode) createMashup(stub shim.ChaincodeStubInterface, args [
 	if err != nil {
 		return shim.Error(err.Error())
 	}
+	err = t.saveServiceByUserName(stub, user_name, mashup_name, serviceJSONasBytes)
 
 	return shim.Success([]byte("Mashup register success."))
 }
@@ -1104,12 +1131,62 @@ func (t *serviceChaincode) callService(stub shim.ChaincodeStubInterface, args []
 	if err != nil {
 		return shim.Error("Save buy record failed: " + err.Error())
 	}
-
+	err = t.saveCallTimesByServiceName(stub, service_name, record_key, recordJson)
 	return shim.Success(nil)
 }
 
 // ========================================================================
-// getCallTime: query some one have buy service's call times
+// saveCallTimesByServiceName: save callTime record with key which include service name and call time key
+//
+// serviceName are required
+// recordKey are required
+// ========================================================================
+func (t *serviceChaincode) saveCallTimesByServiceName(stub shim.ChaincodeStubInterface, serviceName string, recordKey string, state []byte) error {
+	compositeKey, err := stub.CreateCompositeKey(CallTimeKey, []string{serviceName, recordKey})
+	if err != nil {
+		return fmt.Errorf(fmt.Sprintf("create composite key error: %s", err.Error()))
+	}
+	err = stub.PutState(compositeKey, state)
+	if err != nil {
+		return fmt.Errorf(fmt.Sprintf("save error: %s", err.Error()))
+	}
+	return nil
+}
+
+// ========================================================================
+// getCallTimes: query callTimes by service name
+//
+// name are case-sensitive
+// use "" for both name if you want to query all the assets
+// ========================================================================
+func (t *serviceChaincode) getCallTimes(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	var err error
+	resultsIterator, err := stub.GetStateByPartialCompositeKey(CallTimeKey, args)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	callTimes := make([]*serviceCallTime, 0)
+	for i := 0; resultsIterator.HasNext(); i++ {
+		responseRange, err := resultsIterator.Next()
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		callTime := &serviceCallTime{}
+		err = json.Unmarshal(responseRange.Value, callTime)
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		callTimes = append(callTimes, callTime)
+	}
+	callTimesBytes, err := json.Marshal(callTimes)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success(callTimesBytes)
+}
+
+// ========================================================================
+// getCallTime: query some one has buy service's call times
 //
 // serviceName and userName are required
 // ========================================================================
@@ -1239,3 +1316,4 @@ func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args
 	}
 	return shim.Success(nil)
 }
+
