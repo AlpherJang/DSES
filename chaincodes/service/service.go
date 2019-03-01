@@ -303,7 +303,7 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return t.reduceCallTime(stub, args)
 	}
 
-	return shim.Error("Invalid invoke function name.")
+	return shim.Error("Invalid invoke function.")
 }
 
 // Invoke func about user
@@ -343,7 +343,7 @@ func (t *serviceChaincode) registerUser(stub shim.ChaincodeStubInterface, args [
 	}
 
 	// register user
-	user := &user{new_name, new_intro, new_add, 0}
+	user := &user{new_name, new_intro, new_add, 1}
 	userJSONasBytes, err := json.Marshal(user)
 	if err != nil {
 		return shim.Error(err.Error())
@@ -555,6 +555,7 @@ func (t *serviceChaincode) invalidateService(stub shim.ChaincodeStubInterface, a
 	if err != nil {
 		return shim.Error(err.Error())
 	}
+	err = t.saveServiceByUserName(stub, new_service.Developer, service_name, assetJSONasBytes)
 
 	return shim.Success([]byte("Invalidate Service success."))
 }
@@ -623,6 +624,7 @@ func (t *serviceChaincode) publishService(stub shim.ChaincodeStubInterface, args
 	if err != nil {
 		return shim.Error(err.Error())
 	}
+	err = t.saveServiceByUserName(stub, new_service.Developer, service_name, serviceJSONasBytes)
 
 	return shim.Success([]byte("Publish Service success."))
 }
@@ -1316,4 +1318,3 @@ func (t *serviceChaincode) reduceCallTime(stub shim.ChaincodeStubInterface, args
 	}
 	return shim.Success(nil)
 }
-
