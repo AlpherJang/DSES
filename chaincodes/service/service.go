@@ -343,7 +343,7 @@ func (t *serviceChaincode) registerUser(stub shim.ChaincodeStubInterface, args [
 	}
 
 	// register user
-	user := &user{new_name, new_intro, new_add, 1}
+	user := &user{new_name, new_intro, new_add, 0}
 	userJSONasBytes, err := json.Marshal(user)
 	if err != nil {
 		return shim.Error(err.Error())
