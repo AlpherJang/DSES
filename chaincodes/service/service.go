@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/inklabsfoundation/inkchain/core/chaincode/shim"
@@ -265,8 +264,8 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return t.rewardService(stub, args)
 
 	case QueryServiceByUser:
-		if len(args) != 1 {
-			return shim.Error("Incorrect number of arguments. Expecting 1.")
+		if len(args) != 3 {
+			return shim.Error("Incorrect number of arguments. Expecting 3.")
 		}
 		// args[0]: user_name
 		return t.queryServiceByUser(stub, args)
@@ -922,55 +921,54 @@ func (t *serviceChaincode) rewardService(stub shim.ChaincodeStubInterface, args 
 }
 
 // ========================================================================
-// queryServiceByRange: query services' names by range (startKey, endKey)
+// queryServiceByRange: query services' by page and limit
 //
-// startKey and endKey are case-sensitive
-// use "" for both startKey and endKey if you want to query all the assets
+// // page and limit are case-se
 // ========================================================================
 func (t *serviceChaincode) queryServiceByRange(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-
-	startKey := ""
-	endKey := ""
-
-	resultsIterator, err := stub.GetStateByRange(startKey, endKey)
+	var page, limit int64
+	var err error
+	page, err = strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	defer resultsIterator.Close()
-
-	// buffer is a JSON array containing QueryResults
-	var buffer bytes.Buffer
-	buffer.WriteString("[")
-
-	bArrayMemberAlreadyWritten := false
-	bArrayIndex := 1
-	for resultsIterator.HasNext() {
-		queryResponse, err := resultsIterator.Next()
+	limit, err = strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if limit == 0 {
+		limit = 10
+	}
+	if page <= 0 {
+		page = 1
+	}
+	start := (page - 1) * limit
+	resultsIterator, err := stub.GetStateByPartialCompositeKey(UserServicesKey, []string{})
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	services := make([]*service, 0)
+	for i := int64(0); resultsIterator.HasNext(); i++ {
+		responseRange, err := resultsIterator.Next()
 		if err != nil {
 			return shim.Error(err.Error())
 		}
-		// Add a comma before array members, suppress it for the first array member
-		if bArrayMemberAlreadyWritten == true {
-			buffer.WriteString(",")
+		if i >= start && i < start+limit {
+			service := &service{}
+			err = json.Unmarshal(responseRange.Value, service)
+			if err != nil {
+				return shim.Error(err.Error())
+			}
+			services = append(services, service)
+		} else if i >= start+limit {
+			break
 		}
-		// index of the result
-		buffer.WriteString("{\"Number\":")
-		buffer.WriteString("\"")
-		bArrayIndexStr := strconv.Itoa(bArrayIndex)
-		buffer.WriteString(string(bArrayIndexStr))
-		bArrayIndex += 1
-		buffer.WriteString("\"")
-		// information about current asset
-		buffer.WriteString(", \"Record\":")
-		buffer.WriteString(string(queryResponse.Value))
-		buffer.WriteString("}")
-		bArrayMemberAlreadyWritten = true
-
 	}
-	buffer.WriteString("]")
-
-	return shim.Success(buffer.Bytes())
-
+	servicesBytes, err := json.Marshal(services)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success(servicesBytes)
 }
 
 // ========================================================================
@@ -998,22 +996,43 @@ func (t *serviceChaincode) saveServiceByUserName(stub shim.ChaincodeStubInterfac
 // use "" for both name if you want to query all the assets
 // ========================================================================
 func (t *serviceChaincode) queryServiceByUser(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	resultsIterator, err := stub.GetStateByPartialCompositeKey(UserServicesKey, args)
+	var page, limit int64
+	var err error
+	page, err = strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	limit, err = strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if limit == 0 {
+		limit = 10
+	}
+	if page <= 0 {
+		page = 1
+	}
+	start := (page - 1) * limit
+	resultsIterator, err := stub.GetStateByPartialCompositeKey(UserServicesKey, []string{args[2]})
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 	services := make([]*service, 0)
-	for i := 0; resultsIterator.HasNext(); i++ {
+	for i := int64(0); resultsIterator.HasNext(); i++ {
 		responseRange, err := resultsIterator.Next()
 		if err != nil {
 			return shim.Error(err.Error())
 		}
-		service := &service{}
-		err = json.Unmarshal(responseRange.Value, service)
-		if err != nil {
-			return shim.Error(err.Error())
+		if i >= start && i < start+limit {
+			service := &service{}
+			err = json.Unmarshal(responseRange.Value, service)
+			if err != nil {
+				return shim.Error(err.Error())
+			}
+			services = append(services, service)
+		} else if i >= start+limit {
+			break
 		}
-		services = append(services, service)
 	}
 	servicesBytes, err := json.Marshal(services)
 	if err != nil {
