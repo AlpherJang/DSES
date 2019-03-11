@@ -342,7 +342,7 @@ func (t *serviceChaincode) registerUser(stub shim.ChaincodeStubInterface, args [
 	}
 
 	// register user
-	user := &user{new_name, new_intro, new_add, 0}
+	user := &user{new_name, new_intro, new_add, 1}
 	userJSONasBytes, err := json.Marshal(user)
 	if err != nil {
 		return shim.Error(err.Error())
@@ -652,24 +652,34 @@ func (t *serviceChaincode) queryService(stub shim.ChaincodeStubInterface, args [
 
 // ======================================
 // editService: Edit an existed service
+// args[0]: service name
+// args[1]: service type
+// args[2]: service description
+// args[3]: service path
+// args[4]: service price
 // ======================================
 func (t *serviceChaincode) editService(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	var service_name string
-	var field_name string
-	var field_value string
+	var serviceName, serviceType, description, resource, priceStr string
+	var price *big.Int
 	var err error
 
-	service_name = args[0]
-	field_name = args[1]
-	field_value = args[2]
+	serviceName = args[0]
+	serviceType = args[1]
+	description = args[2]
+	resource = args[3]
+	priceStr = args[4]
+	price, ok := big.NewInt(0).SetString(priceStr, 10)
+	if !ok{
+		return shim.Error("5th args must be intefer")
+	}
 
 	// STEP 0: check the service does not exist
-	service_key := ServicePrefix + service_name
-	serviceAsBytes, err := stub.GetState(service_key)
+	serviceKey := ServicePrefix + serviceName
+	serviceAsBytes, err := stub.GetState(serviceKey)
 	if err != nil {
 		return shim.Error("Fail to get service: " + err.Error())
 	} else if serviceAsBytes == nil {
-		return shim.Error("This service does not exist: " + service_name)
+		return shim.Error("This service does not exist: " + serviceName)
 	}
 
 	// STEP 1: check whether it is the service's developer's invocation
@@ -687,15 +697,14 @@ func (t *serviceChaincode) editService(stub shim.ChaincodeStubInterface, args []
 
 	// 0125
 	// get developer's address
-	dev_key := UserPrefix + serviceJSON.Developer
-	devAsBytes, err := stub.GetState(dev_key)
+	devKey := UserPrefix + serviceJSON.Developer
+	devAsBytes, err := stub.GetState(devKey)
 	if err != nil {
 		return shim.Error("Error get the developer.")
 	}
 	var DevJSON user
 	err = json.Unmarshal([]byte(devAsBytes), &DevJSON)
 
-	fmt.Println("DevAddress:  " + DevJSON.Address)
 	if senderAdd != DevJSON.Address {
 		return shim.Error("Aurthority err! Not invoke by the service's developer.")
 	}
@@ -704,33 +713,20 @@ func (t *serviceChaincode) editService(stub shim.ChaincodeStubInterface, args []
 	tNow := time.Now()
 	tString := tNow.UTC().Format(time.UnixDate)
 
-	new_service := &service{serviceJSON.Name, serviceJSON.Type, serviceJSON.Developer,
-		serviceJSON.Description, serviceJSON.Resource, serviceJSON.Price, serviceJSON.CreatedTime, tString,
+	newService := &service{serviceJSON.Name, serviceType, serviceJSON.Developer,
+		description, resource, price, serviceJSON.CreatedTime, tString,
 		serviceJSON.Status, serviceJSON.IsMashup, serviceJSON.Composition}
-
-	// STEP 3: update field value
-	// developer can update service's type/description information
-	switch field_name {
-	case "Type":
-		new_service.Type = field_value
-		goto LABEL_STORE
-	case "Description":
-		new_service.Description = field_value
-		goto LABEL_STORE
-	}
-	return shim.Error("Error field name.")
-
-LABEL_STORE:
 	// STEP 4: store the service
-	serviceJSONasBytes, err := json.Marshal(new_service)
+	serviceJSONasBytes, err := json.Marshal(newService)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 
-	err = stub.PutState(service_key, serviceJSONasBytes)
+	err = stub.PutState(serviceKey, serviceJSONasBytes)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
+	err = t.saveServiceByUserName(stub, newService.Developer, serviceName, serviceJSONasBytes)
 
 	// return service info
 	return shim.Success(serviceAsBytes)
