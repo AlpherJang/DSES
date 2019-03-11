@@ -225,12 +225,14 @@ func (t *serviceChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response 
 		return t.queryService(stub, args)
 
 	case EditService:
-		if len(args) != 3 {
-			return shim.Error("Incorrect number of arguments. Expecting 3.")
+		if len(args) != 5 {
+			return shim.Error("Incorrect number of arguments. Expecting 5.")
 		}
 		// args[0]: service name
-		// args[1]: filed name to change
-		// args[2]: new filed value
+		// args[1]: service type
+		// args[2]: service description
+		// args[3]: service path
+		// args[4]: service price
 		return t.editService(stub, args)
 
 	case CreateMashup:
