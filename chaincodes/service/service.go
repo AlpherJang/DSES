@@ -1373,8 +1373,11 @@ func (t *serviceChaincode) calcContribution(serviceUser user) user {
 	totalService := float64(serviceUser.TotalService)
 	totalInvokeTimes := float64(serviceUser.TotalInvokeTimes)
 	totalCallTimes := float64(serviceUser.TotalCallTimes)
-	contribute := math.Log(totalService+1) + L*(totalInvokeTimes/totalService) + R*(totalCallTimes/totalService)
-	serviceUser.Contribution = contribute
+	if totalService == 0 {
+		serviceUser.Contribution = math.Log(totalService + 1)
+	} else {
+		serviceUser.Contribution = math.Log(totalService+1) +  L*(totalInvokeTimes/totalService) + R*(totalCallTimes/totalService)
+	}
 	return serviceUser
 }
 
